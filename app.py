@@ -168,6 +168,51 @@ def customers(a):
 @app.post("/api/orders")
 @protected()
 def order(a):
-    # Deliberately disabled until an independent payment and shipping configuration is installed.
-    data()
-    return jsonify(error="Checkout ainda não habilitado. Nenhum valor foi cobrado."),503
+    x=data()
+    items=x.get("items")
+    address=x.get("address")
+    if not isinstance(items,list) or not 1<=len(items)<=30 or not isinstance(address,dict): abort(400)
+    address={k:str(address.get(k,"")).strip() for k in ("name","phone","cep","street","number","complement","district","city","state")}
+    if not all(address[k] for k in ("name","phone","cep","street","number","district","city","state")) or any(len(v)>180 for v in address.values()): abort(400)
+    if not re.fullmatch(r"[0-9]{5}-?[0-9]{3}",address["cep"]) or not re.fullmatch(r"[A-Za-z]{2}",address["state"]): abort(400)
+    quantities={}
+    for item in items:
+        if not isinstance(item,dict) or type(item.get("qty")) is not int or not 1<=item["qty"]<=10: abort(400)
+        try: vid=str(uuid.UUID(str(item.get("id"))))
+        except (ValueError,TypeError): abort(400)
+        quantities[vid]=quantities.get(vid,0)+item["qty"]
+        if quantities[vid]>10: abort(400)
+    with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",(str(a["id"]),))
+        if c.execute("SELECT count(*) AS n FROM orders WHERE account_id=%s AND created_at>now()-interval '1 hour'",(a["id"],)).fetchone()["n"]>=5: abort(429)
+        lines=[]; total=0
+        for vid,q in sorted(quantities.items()):
+            v=c.execute("SELECT v.id,v.sku,v.price_cents,v.stock,p.name FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=%s AND v.active AND p.active",(vid,)).fetchone()
+            if not v or v["stock"]<q: abort(409)
+            total+=q*v["price_cents"]; lines.append((v,q))
+        # Requests do not reserve inventory or authorize payment; confirmation is manual.
+        o=c.execute("INSERT INTO orders(account_id,subtotal_cents,shipping_address) VALUES(%s,%s,%s) RETURNING id,status,total_cents",(a["id"],total,Jsonb(address))).fetchone()
+        for v,q in lines: c.execute("INSERT INTO order_items(order_id,variant_id,product_name,sku,quantity,unit_price_cents) VALUES(%s,%s,%s,%s,%s,%s)",(o["id"],v["id"],v["name"],v["sku"],q,v["price_cents"]))
+    return jsonify(o),201
+@app.get("/api/admin/orders/<oid>")
+@protected("admin")
+def admin_order_detail(a,oid):
+    try: oid=uuid.UUID(oid)
+    except ValueError: abort(404)
+    with db() as c:
+        o=c.execute("SELECT id,status,subtotal_cents,shipping_address,created_at FROM orders WHERE id=%s",(oid,)).fetchone()
+        if not o: abort(404)
+        o["items"]=c.execute("SELECT product_name,sku,quantity,unit_price_cents FROM order_items WHERE order_id=%s",(oid,)).fetchall()
+    return jsonify(o)
+@app.post("/api/admin/orders/<oid>/status")
+@protected("admin")
+def order_status(a,oid):
+    try: oid=uuid.UUID(oid)
+    except ValueError: abort(404)
+    status=data().get("status")
+    # Do not mark any order paid without a verified payment integration.
+    if status!="cancelled": abort(400)
+    with db() as c:
+        o=c.execute("UPDATE orders SET status='cancelled' WHERE id=%s AND status='pending' RETURNING id",(oid,)).fetchone()
+        if not o: abort(409)
+    return {"ok":True}
