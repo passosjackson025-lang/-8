@@ -1,0 +1,3 @@
+# Loja independente — projeto -8
+
+Projeto de comércio Apple, sem marca comercial definida. Python/Flask + PostgreSQL Neon. Não há credenciais no Git. Configure DATABASE_URL e ADMIN_SETUP_TOKEN exclusivamente no ambiente Render. Use um token novo com pelo menos 32 caracteres e remova após criar o primeiro administrador em /admin. Para desenvolvimento local, COOKIE_SECURE=false. Instale requirements.txt e execute flask --app app run. Produção: gunicorn app:app. Checkout bloqueado até integração de pagamento/frete independente; não há cobrança simulada. Catálogo começa vazio; demonstração visual não é estoque real.
